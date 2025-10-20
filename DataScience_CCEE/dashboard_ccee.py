@@ -1,97 +1,128 @@
-# =========================================
-# Dashboard CCEE - Preços de Energia
-# =========================================
-
+import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error
-import streamlit as st
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+import numpy as np
 
-# -----------------------------
-# 1️⃣ Carregar dados
-# -----------------------------
-df_raw = pd.read_csv("ccee_energia.csv", sep=";")
+# =========================================
+# CONFIGURAÇÃO BÁSICA DA PÁGINA
+# =========================================
+st.set_page_config(
+    page_title="Dashboard CCEE ⚡",
+    page_icon="⚡",
+    layout="wide"
+)
 
-# "Derreter" as colunas de datas em linhas
-df = df_raw.melt(id_vars=["Hora", "Submercado"],
-                 var_name="Data",
-                 value_name="PLD")
+st.title("⚡ Dashboard de Energia - CCEE")
+st.markdown("Análise exploratória, previsão e insights com base nos dados da CCEE.")
 
-# Converter Data
-df["Data"] = pd.to_datetime(df["Data"], dayfirst=True)
+# =========================================
+# LEITURA DOS DADOS
+# =========================================
+@st.cache_data
+def carregar_dados():
+    df = pd.read_csv("ccee_energia.csv", sep=",")
+    
+    # Ajuste de colunas (corrige nomes e tipos)
+    df.columns = df.columns.str.strip()
+    
+    # Detecta automaticamente a coluna de data
+    for col in df.columns:
+        if "data" in col.lower():
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+            df.rename(columns={col: "Data"}, inplace=True)
+    
+    # Cria colunas auxiliares
+    df["Ano"] = df["Data"].dt.year
+    df["Mês"] = df["Data"].dt.month
+    return df
 
-# Converter PLD para numérico
-df["PLD"] = pd.to_numeric(df["PLD"], errors="coerce")
+df = carregar_dados()
 
-st.title("⚡ Dashboard CCEE - Preços de Energia")
+# =========================================
+# FILTROS
+# =========================================
+st.sidebar.header("🔍 Filtros")
 
-# -----------------------------
-# 2️⃣ Limpeza e tratamento
-# -----------------------------
-df.dropna(subset=["PLD"], inplace=True)
-df.drop_duplicates(inplace=True)
-df = df.sort_values("Data")
+anos = sorted(df["Ano"].dropna().unique())
+ano_sel = st.sidebar.selectbox("Selecione o Ano", anos)
 
-st.subheader("Visualização Inicial")
-st.dataframe(df.head(10))
+agentes = ["Todos"] + sorted(df["Agente"].dropna().unique()) if "Agente" in df.columns else ["Todos"]
+agente_sel = st.sidebar.selectbox("Selecione o Agente", agentes)
 
-# -----------------------------
-# 3️⃣ Filtros interativos
-# -----------------------------
-st.sidebar.header("Filtros do Dashboard")
-submercados = df["Submercado"].unique()
-selected_sub = st.sidebar.multiselect("Escolha Submercado(s)", submercados, submercados)
-start_date = st.sidebar.date_input("Data Inicial", df["Data"].min())
-end_date = st.sidebar.date_input("Data Final", df["Data"].max())
+submercados = ["Todos"] + sorted(df["Submercado"].dropna().unique()) if "Submercado" in df.columns else ["Todos"]
+submercado_sel = st.sidebar.selectbox("Selecione o Submercado", submercados)
 
-df_filtered = df[(df["Submercado"].isin(selected_sub)) &
-                 (df["Data"] >= pd.to_datetime(start_date)) &
-                 (df["Data"] <= pd.to_datetime(end_date))]
+# =========================================
+# APLICAÇÃO DOS FILTROS
+# =========================================
+df_filtrado = df[df["Ano"] == ano_sel]
 
-st.subheader(f"Dados Filtrados ({len(df_filtered)} registros)")
-st.dataframe(df_filtered.head(10))
+if agente_sel != "Todos":
+    df_filtrado = df_filtrado[df_filtrado["Agente"] == agente_sel]
 
-# -----------------------------
-# 4️⃣ Modelo simples de previsão
-# -----------------------------
-df_filtered["Dia"] = (df_filtered["Data"] - df_filtered["Data"].min()).dt.days
-X = df_filtered[["Dia"]]
-y = df_filtered["PLD"]
+if submercado_sel != "Todos":
+    df_filtrado = df_filtrado[df_filtrado["Submercado"] == submercado_sel]
 
-if len(df_filtered) > 10:  # só roda previsão se tiver dados suficientes
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+# =========================================
+# GRÁFICOS PRINCIPAIS
+# =========================================
+st.markdown("## 📊 Visão Geral")
 
-    model_reg = LinearRegression()
-    model_reg.fit(X_train, y_train)
-    y_pred = model_reg.predict(X_test)
-    rmse = mean_squared_error(y_test, y_pred, squared=False)
+col1, col2 = st.columns(2)
 
-    st.subheader("📈 Regressão Linear - Previsão do PLD")
-    st.write(f"RMSE: {rmse:.2f} R$/MWh")
+with col1:
+    st.subheader("Preço Médio de Energia (PLD)")
+    if "Preço" in df_filtrado.columns:
+        preco_mensal = df_filtrado.groupby("Mês")["Preço"].mean()
+        st.line_chart(preco_mensal)
+    else:
+        st.warning("Coluna 'Preço' não encontrada na base.")
 
-    # -----------------------------
-    # 5️⃣ Gráficos
-    # -----------------------------
-    st.subheader("Evolução do PLD ao longo do tempo")
-    fig1, ax1 = plt.subplots()
-    sns.lineplot(data=df_filtered, x="Data", y="PLD", hue="Submercado", ax=ax1)
-    st.pyplot(fig1)
+with col2:
+    st.subheader("Volume Total Comercializado (MWh)")
+    if "Energia_MWh" in df_filtrado.columns:
+        energia_mensal = df_filtrado.groupby("Mês")["Energia_MWh"].sum()
+        st.bar_chart(energia_mensal)
+    else:
+        st.warning("Coluna 'Energia_MWh' não encontrada na base.")
 
-    st.subheader("Distribuição do PLD")
-    fig2, ax2 = plt.subplots()
-    sns.histplot(df_filtered["PLD"], bins=30, kde=True, ax=ax2)
-    st.pyplot(fig2)
+# =========================================
+# SEÇÃO DE ANÁLISE DETALHADA
+# =========================================
+st.markdown("---")
+st.subheader("📈 Análise Detalhada e Previsão")
 
-    # -----------------------------
-    # 6️⃣ Previsão em tempo real
-    # -----------------------------
-    st.subheader("🔮 Prever PLD em função da Data")
-    future_days = st.number_input("Quantos dias após a última data da base?", min_value=1, value=10)
-    last_day = (df_filtered["Data"].max() - df_filtered["Data"].min()).days
-    predicted_pld = model_reg.predict([[last_day + future_days]])[0]
-    st.success(f"💰 PLD Previsto em {future_days} dias: R$ {predicted_pld:.2f} / MWh")
+if "Preço" in df_filtrado.columns and "Mês" in df_filtrado.columns:
+    X = df_filtrado[["Mês"]]
+    y = df_filtrado["Preço"]
+
+    modelo = LinearRegression()
+    modelo.fit(X, y)
+    previsoes = modelo.predict(X)
+
+    mae = mean_absolute_error(y, previsoes)
+    rmse = mean_squared_error(y, previsoes, squared=False)
+
+    fig, ax = plt.subplots()
+    ax.scatter(X, y, label="Dados Reais")
+    ax.plot(X, previsoes, color="red", label="Previsão Linear")
+    ax.set_xlabel("Mês")
+    ax.set_ylabel("Preço (R$/MWh)")
+    ax.legend()
+    st.pyplot(fig)
+
+    st.metric("Erro Médio Absoluto (MAE)", f"{mae:.2f}")
+    st.metric("Raiz do Erro Quadrático Médio (RMSE)", f"{rmse:.2f}")
 else:
-    st.warning("Poucos dados filtrados para rodar previsão.")
+    st.warning("Colunas necessárias para previsão não encontradas na base.")
+
+# =========================================
+# TABELA FINAL
+# =========================================
+st.markdown("---")
+st.subheader("📋 Dados Filtrados")
+st.dataframe(df_filtrado)
+
+st.caption("Fonte: Câmara de Comercialização de Energia Elétrica (CCEE)")
